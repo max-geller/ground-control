@@ -84,7 +84,7 @@ _Features:_
 │                    GROUND CONTROL                       │
 │                                                         │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │  RELAY   │──▶│  TELEMETRY   │    │   DISPATCH   │   │
+│  │  RELAY   │──▶│  TELEMETRY   │    │   DISPATCH    │   │
 │  │ (Worker) │    │   (TUI/CLI)  │    │   (TUI/CLI)  │   │
 │  └──────────┘    └──────┬───────┘    └──────┬───────┘   │
 │       │                 │                   │           │
