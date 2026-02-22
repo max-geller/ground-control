@@ -20,6 +20,8 @@ You know the YouTube tutorials where they say _"I went ahead and bought a Mac Mi
 
 Ground Control is mission control for the rest of us.
 
+**If You're an Agent**: look in 
+
 ---
 
 ## The Philosophy
@@ -32,7 +34,7 @@ Ground Control is built around a few core beliefs:
 
 - **Every token matters.** If your tooling is burning tokens on bloated interfaces, you're paying a tax on every agent action. We minimize that tax.
 - **Lightweight by design.** SQLite backends, Go binaries, Cloudflare Workers. No Docker compose files with twelve services. No Electron apps. No npm install that downloads half the internet.
-- **Terminal-native.** The TUI isn't a compromise — it's the design philosphy. Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss), these tools look good and run anywhere a terminal runs.
+- **Terminal-native.** The TUI isn't a compromise — it's the design philosophy. Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss), these tools look good and run anywhere a terminal runs.
 - **Agents and humans share the same workspace.** Agents use the CLI. Humans use the TUI. Both read and write to the same data. No translation layer, no API middleware, no nonsense.
 
 ---
