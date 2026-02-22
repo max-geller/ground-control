@@ -1,0 +1,72 @@
+name: New Tool Proposal
+description: Propose a new tool for the Ground Control ecosystem
+title: "[Proposal]: "
+labels: ["proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Think something's missing from the Ground Control ecosystem? Let's talk about it.
+
+        Before proposing, check that your idea aligns with the project philosophy:
+        - **Lightweight** — SQLite, Go binaries, minimal dependencies
+        - **Terminal-first** — TUI for humans, CLI for agents
+        - **Token-efficient** — Every agent interaction should cost as few tokens as possible
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What gap does this fill?
+      description: What's missing from the current Ground Control ecosystem that this tool would address?
+      placeholder: "There's no way to manage agent configuration (model selection, temperature, system prompts) from the terminal. Right now I have to edit TOML files manually."
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the tool
+      description: What would it do? What would the TUI look like? What CLI commands would it expose?
+      placeholder: |
+        `openclaw-config` — Agent configuration management.
+        - TUI: Browse and edit agent configs, see active model/temperature per agent
+        - CLI: `config get --agent dex --field model` → "sonnet-4.5"
+        - CLI: `config set --agent dex --field model --value "haiku-4.5"`
+        - SQLite backend for config history and rollback
+    validations:
+      required: true
+
+  - type: textarea
+    id: integration
+    attributes:
+      label: How does it integrate with existing tools?
+      description: How would this tool interact with Relay, Telemetry, and/or Dispatch?
+      placeholder: "Telemetry could read config to know which model each agent is using, enabling per-agent cost attribution. Dispatch could reference config when assigning tasks to agents."
+    validations:
+      required: true
+
+  - type: textarea
+    id: token_impact
+    attributes:
+      label: Token efficiency considerations
+      description: How would agents interact with this tool? Estimated token cost per interaction?
+      placeholder: "CLI queries would return small JSON objects. A `config get` call would cost ~30-50 tokens to parse. No natural language processing needed."
+    validations:
+      required: true
+
+  - type: textarea
+    id: willingness
+    attributes:
+      label: Would you help build it?
+      description: Are you interested in contributing to the implementation, or is this more of a suggestion?
+      placeholder: "I'd be happy to take a first pass at the CLI interface and SQLite schema."
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: References, similar tools, mockups, etc.
+    validations:
+      required: false

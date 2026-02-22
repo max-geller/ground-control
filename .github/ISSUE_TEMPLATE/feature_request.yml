@@ -1,0 +1,68 @@
+name: Feature Request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? We'd love to hear it. Just remember the Ground Control philosophy: lightweight, terminal-first, token-efficient.
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Which tool does this relate to?
+      options:
+        - openclaw-telemetry
+        - openclaw-dispatch
+        - openclaw-relay
+        - ground-control (new tool / ecosystem-wide)
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the pain point or gap this feature would address.
+      placeholder: "Right now I can't see cost breakdowns per-agent. I have three agents and I don't know which one is burning the most tokens."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would the solution look like?
+      description: Describe how you'd want this to work — TUI view, CLI command, etc.
+      placeholder: |
+        A `telemetry cost --by-agent` flag that breaks down costs per agent name.
+        In the TUI, an additional tab or filter on the dashboard view.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Is this for humans, agents, or both?
+      options:
+        - Human (TUI)
+        - Agent (CLI)
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Any workarounds or alternative approaches you've thought about.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Mockups, screenshots, related issues, links to similar tools, etc.
+    validations:
+      required: false
