@@ -1,6 +1,6 @@
 # 🦞 Ground Control — Architecture
 
-> How data flows from the API providers to your terminal.
+> How data flows from OpenClaw session logs to your terminal.
 
 This document describes how the Ground Control ecosystem fits together: how cost and usage data is collected, stored, and surfaced to both humans and agents.
 
@@ -8,103 +8,166 @@ This document describes how the Ground Control ecosystem fits together: how cost
 
 ## Overview
 
-Ground Control follows a simple three-stage pipeline: **collect → store → act**.
+Ground Control follows a simple three-stage pipeline: **ingest → store → act**.
+
+All cost and usage data originates locally. OpenClaw logs every model response — from every provider — to session JSONL files on the VPS. Each assistant message includes full token counts. Ground Control ingests these logs, computes estimated costs from a static pricing table, and writes per-request events to a local SQLite database. No external API polling. No relay infrastructure. No network dependency.
 
 ```
-                        ┌─────────────────┐
-                        │  Anthropic API  │
-                        └────────┬────────┘
-                                 │
-                        ┌────────┴────────┐
-                        │   OpenAI API    │
-                        └────────┬────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │      OPENCLAW-RELAY     │
-                    │   (Cloudflare Worker)   │
-                    │                         │
-                    │  • Polls usage APIs     │
-                    │  • Normalizes data      │
-                    │  • Forwards to host     │
-                    └────────────┬────────────┘
-                                 │
-                          HTTPS POST
-                         (JSON payload)
-                                 │
-              ┌──────────────────▼───────────────────┐
-              │           HOST / VPS                 │
-              │                                      │
-              │  ┌────────────────────────────────┐  │
-              │  │       OPENCLAW-TELEMETRY       │  │
-              │  │                                │  │
-              │  │  Collector ──▶ SQLite DB      │  │
-              │  │                  │             │  │
-              │  │           ┌─────┴──────┐       │  │
-              │  │           │            │       │  │
-              │  │        TUI View    CLI Query   │  │
-              │  │        (human)     (agent)     │  │
-              │  └────────────────────────────────┘  │
-              │                                      │
-              │  ┌────────────────────────────────┐  │
-              │  │       OPENCLAW-DISPATCH        │  │
-              │  │                                │  │
-              │  │  Task Store ──▶ SQLite DB     │  │
-              │  │                  │             │  │
-              │  │           ┌─────┴──────┐       │  │
-              │  │           │            │       │  │
-              │  │        TUI View    CLI Commands│  │
-              │  │        (human)     (agent)     │  │
-              │  └────────────────────────────────┘  │
-              │                                      │
-              │  ┌────────────────────────────────┐  │
-              │  │        OPENCLAW AGENTS         │  │
-              │  │                                │  │
-              │  │  • Read costs via CLI          │  │
-              │  │  • Create/update tasks via CLI │  │
-              │  │  • Suggest optimizations       │  │
-              │  │  • Await human approval        │  │
-              │  └────────────────────────────────┘  │
-              └──────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │                      HOST / VPS                          │
+  │                                                          │
+  │  ┌────────────────────────────────────────────────────┐  │
+  │  │                OPENCLAW GATEWAY                    │  │
+  │  │                                                    │  │
+  │  │  Agents: Dex, Cassandra, Max, Borkus               │  │
+  │  │  Providers: Anthropic, OpenAI, Google               │  │
+  │  │                                                    │  │
+  │  │  Every model response → session JSONL with usage   │  │
+  │  │  ~/.openclaw/agents/*/sessions/*.jsonl             │  │
+  │  └──────────────────────┬─────────────────────────────┘  │
+  │                         │                                │
+  │                    JSONL files                            │
+  │                    (append-only)                          │
+  │                         │                                │
+  │  ┌──────────────────────▼─────────────────────────────┐  │
+  │  │             INGESTION SERVICE                      │  │
+  │  │           (cron or file-watcher)                    │  │
+  │  │                                                    │  │
+  │  │  1. Tail new JSONL entries since last offset       │  │
+  │  │  2. Extract usage events (input, output, cache)    │  │
+  │  │  3. Map agent → provider → model                   │  │
+  │  │  4. Multiply tokens × static pricing table         │  │
+  │  │  5. Write per-request events to SQLite             │  │
+  │  │  6. Check budget alerts                            │  │
+  │  └──────────────────────┬─────────────────────────────┘  │
+  │                         │                                │
+  │                         ▼                                │
+  │  ┌────────────────────────────────────────────────────┐  │
+  │  │             SQLite Database                        │  │
+  │  │          ~/.openclaw/cost-tracking.db              │  │
+  │  │                                                    │  │
+  │  │  usage_events | model_pricing | agents | alerts    │  │
+  │  └────────┬───────────────────┬───────────────────────┘  │
+  │           │                   │                          │
+  │  ┌────────▼────────┐  ┌──────▼──────────┐               │
+  │  │   TELEMETRY     │  │    DISPATCH     │               │
+  │  │   (TUI/CLI)     │  │    (TUI/CLI)    │               │
+  │  │                 │  │                 │               │
+  │  │  Cost views,    │  │  Task mgmt,    │               │
+  │  │  budget alerts, │  │  Kanban,       │               │
+  │  │  optimization   │  │  assignments   │               │
+  │  └────────┬────────┘  └──────┬──────────┘               │
+  │           │                  │                           │
+  │           ▼                  ▼                           │
+  │  ┌────────────────────────────────────────────────────┐  │
+  │  │              OPENCLAW AGENTS                       │  │
+  │  │                                                    │  │
+  │  │  • Read costs via CLI (sub-millisecond)            │  │
+  │  │  • Create/update tasks via CLI                     │  │
+  │  │  • Suggest optimizations                           │  │
+  │  │  • Await human approval                            │  │
+  │  └────────────────────────────────────────────────────┘  │
+  │                                                          │
+  │  All reads are local. Sub-millisecond. No network deps.  │
+  └──────────────────────────────────────────────────────────┘
+
+  Optional (future):
+    VPS exposes a lightweight API → SvelteKit dashboard
+    Or: Litestream replicates SQLite to R2 for edge reads
 ```
 
 ---
 
 ## Component Details
 
-### openclaw-relay
+### Data Source: OpenClaw Session JSONL
 
-**What it is:** A Cloudflare Worker deployed on the edge.
+**What it is:** The raw usage data that OpenClaw already produces.
 
-**What it does:** Relay runs on a cron schedule (configurable, default 15 minutes) and pulls usage and billing data from the Anthropic and OpenAI APIs. It normalizes the data into a common format and forwards it to your host via HTTPS POST.
-
-**Why Cloudflare Workers:** They're free (or near-free) on the Cloudflare free tier, they run globally on the edge, and they require zero server infrastructure. Relay doesn't need to live on your VPS — it runs independently and just pushes data to wherever your telemetry instance is listening.
-
-**Data flow:**
+**Where it lives:**
 ```
-Anthropic Usage API ──┐
-                      ├──▶ Relay (normalize) ──▶ POST to host
-OpenAI Usage API ─────┘
+~/.openclaw/agents/{agent_name}/sessions/*.jsonl
 ```
 
-**Normalized payload (simplified):**
+Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent attribution is automatic — the directory name _is_ the agent.
+
+**What a usage event looks like:**
 ```json
 {
-  "provider": "anthropic",
-  "model": "opus-4.6",
-  "timestamp": "2026-02-21T14:00:00Z",
-  "input_tokens": 12500,
-  "output_tokens": 3200,
-  "cache_write_tokens": 850,
-  "cache_read_tokens": 200,
-  "cost_usd": 0.47,
-  "requests": 3
+  "type": "message",
+  "message": {
+    "role": "assistant",
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "usage": {
+      "input": 45230,
+      "output": 1847,
+      "cacheRead": 108928,
+      "cacheWrite": 4200,
+      "cost": { "total": 0.85 }
+    },
+    "timestamp": 1769753935279
+  }
 }
 ```
 
+**Provider field values:** `anthropic`, `openai`, `openai-codex`, `google`
+
+**Token fields by provider:**
+
+| Field | Anthropic | OpenAI | Google |
+|---|---|---|---|
+| `input` | ✓ (uncached) | ✓ (total, includes cached) | ✓ |
+| `output` | ✓ | ✓ | ✓ |
+| `cacheRead` | ✓ | ✓ | ✓ |
+| `cacheWrite` | ✓ | — (free) | — (free) |
+| `cost.total` | ✓ (OpenClaw estimate) | ✓ | ✓ |
+
+**Why this replaces the relay:** The data already exists locally. OpenClaw logs every model response with full token counts from all three providers. There's no need to poll external admin APIs when the same information originates on the VPS. This eliminates the Cloudflare Worker, D1 database, sync mechanism, admin API keys, and ~864 external API calls per day.
+
+---
+
+### Ingestion Service
+
+**What it is:** A lightweight script (Python or Node) that runs on a cron (every 1-5 minutes) or as a file watcher.
+
+**What it does:** Tails OpenClaw's session JSONL files, extracts usage events from assistant messages, computes estimated costs using the static pricing table, and writes per-request events to SQLite.
+
+**How it works:**
+1. Read `ingestion_state` table to get last-processed file offset per session file
+2. Scan `~/.openclaw/agents/*/sessions/*.jsonl` for new data past stored offsets
+3. For each new JSONL line with `type: "message"`, `role: "assistant"`, and usage data:
+   - Extract provider, model, token counts, timestamp
+   - Derive `agent_id` from the directory path
+   - Look up current pricing from `model_pricing` table
+   - Compute estimated cost: `(input × input_rate + output × output_rate + cacheRead × cache_read_rate + cacheWrite × cache_write_rate) / 1,000,000`
+   - Insert into `usage_events`
+4. Update `ingestion_state` with new file offsets
+5. Check budget alerts and fire if thresholds are exceeded
+
 **Key design decisions:**
-- Relay is stateless. It doesn't store anything — it just fetches and forwards.
-- One Worker handles multiple providers. Provider-specific logic is isolated in adapter modules.
-- The sync interval is configurable. 15 minutes is the default balance between freshness and API rate limits.
+- Idempotent re-runs via offset tracking. The script picks up where it left off.
+- Per-request granularity (not pre-aggregated buckets). You get exact attribution: which session, which model call, which agent.
+- Aggregation happens at query time, not at ingestion time.
+- If OpenClaw rotates or archives session files, old entries in `ingestion_state` are simply ignored.
+
+---
+
+### Cost Estimation: The Static Pricing Table
+
+**Target accuracy: ~90%.** Good enough for agents to understand their cost profile, identify expensive patterns, and self-optimize. Not for invoice reconciliation.
+
+Published model pricing changes 2-3 times per year, announced in advance. Between changes, the pricing table is exact for standard usage. The only sources of drift are:
+
+| Drift Source | Impact | Notes |
+|---|---|---|
+| Context window tiers (Anthropic 0-200k vs 200k-1M) | ~10-20% on affected calls | Only Anthropic, only for large contexts |
+| Batch discounts | ~50% lower | Agents don't typically batch |
+| Cache read discount variance (OpenAI 50-90%) | ±20% on cached reads | Use midpoint estimate |
+
+For the intended use case — agents asking "should I use Opus or Sonnet for this?" or "am I burning too much on cache writes?" — a ±5-10% cost estimate is more than adequate. The decisions don't change at that margin.
+
+**Optional reconciliation:** Provider billing APIs (Anthropic's `/v1/organizations/cost_report`, OpenAI's `/v1/organization/costs`) remain available for periodic comparison. This could be a weekly script, not a core pipeline dependency.
 
 ---
 
@@ -112,7 +175,7 @@ OpenAI Usage API ─────┘
 
 **What it is:** A Go binary that runs on your host. Provides both a TUI (for humans) and a CLI (for agents).
 
-**What it does:** Telemetry receives data from Relay, stores it in a local SQLite database, and provides cost monitoring, budget tracking, alerting, and optimization analysis.
+**What it does:** Reads from the local SQLite database populated by the ingestion service. Provides cost monitoring, budget tracking, alerting, and optimization analysis.
 
 **Dual interface pattern:**
 ```
@@ -132,44 +195,63 @@ The TUI renders rich, interactive views with charts, tables, and navigation. The
 
 **SQLite schema (simplified):**
 ```sql
-CREATE TABLE usage_records (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider    TEXT NOT NULL,        -- 'anthropic', 'openai'
-    model       TEXT NOT NULL,        -- 'opus-4.6', 'gpt-4o', etc.
-    timestamp   TEXT NOT NULL,        -- ISO 8601
-    input_tokens    INTEGER NOT NULL,
-    output_tokens   INTEGER NOT NULL,
-    cache_write_tokens INTEGER DEFAULT 0,
-    cache_read_tokens  INTEGER DEFAULT 0,
-    cost_usd    REAL NOT NULL,
-    requests    INTEGER NOT NULL
+CREATE TABLE usage_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           TEXT NOT NULL,       -- ISO 8601 from JSONL event
+    agent_id            TEXT NOT NULL,       -- from session directory name
+    provider            TEXT NOT NULL,       -- 'anthropic' | 'openai' | 'google'
+    model               TEXT NOT NULL,
+    input_tokens        INTEGER DEFAULT 0,
+    output_tokens       INTEGER DEFAULT 0,
+    cache_read_tokens   INTEGER DEFAULT 0,
+    cache_write_tokens  INTEGER DEFAULT 0,   -- Anthropic only
+    total_tokens        INTEGER DEFAULT 0,
+    estimated_cost_usd  REAL,
+    session_file        TEXT,
+    session_id          TEXT
 );
 
-CREATE TABLE budgets (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    period      TEXT NOT NULL,        -- 'daily', 'weekly', 'monthly'
-    amount_usd  REAL NOT NULL,
-    provider    TEXT,                 -- NULL = all providers
-    created_at  TEXT NOT NULL
+CREATE TABLE agents (
+    id                  TEXT PRIMARY KEY,    -- 'dex', 'cassandra', 'max', 'borkus'
+    display_name        TEXT NOT NULL,
+    monthly_budget_usd  REAL,               -- null = no limit
+    daily_alert_usd     REAL,
+    is_active           INTEGER DEFAULT 1
+);
+
+CREATE TABLE model_pricing (
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    token_type      TEXT NOT NULL,           -- 'input' | 'output' | 'cache_read' | 'cache_write'
+    cost_per_mtok   REAL NOT NULL,           -- USD per 1M tokens
+    effective_date  TEXT NOT NULL,
+    PRIMARY KEY (provider, model, token_type, effective_date)
 );
 
 CREATE TABLE alerts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    metric      TEXT NOT NULL,        -- 'daily_spend', 'hourly_spend', 'cache_write_ratio'
+    metric      TEXT NOT NULL,
     threshold   REAL NOT NULL,
     enabled     INTEGER DEFAULT 1,
     created_at  TEXT NOT NULL
 );
 
 CREATE TABLE optimization_suggestions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id    TEXT NOT NULL,
-    suggestion  TEXT NOT NULL,
-    reasoning   TEXT,
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id              TEXT NOT NULL,
+    suggestion            TEXT NOT NULL,
+    reasoning             TEXT,
     estimated_savings_usd REAL,
-    status      TEXT DEFAULT 'pending', -- 'pending', 'approved', 'denied'
-    created_at  TEXT NOT NULL,
-    reviewed_at TEXT
+    status                TEXT DEFAULT 'pending',  -- 'pending', 'approved', 'denied'
+    created_at            TEXT NOT NULL,
+    reviewed_at           TEXT
+);
+
+CREATE TABLE ingestion_state (
+    file_path     TEXT PRIMARY KEY,
+    last_offset   INTEGER NOT NULL DEFAULT 0,
+    last_line_ts  TEXT,
+    updated_at    TEXT DEFAULT (datetime('now'))
 );
 ```
 
@@ -177,8 +259,8 @@ CREATE TABLE optimization_suggestions (
 
 This is the core value proposition of Telemetry. It's not just a dashboard — it's a feedback loop:
 
-1. **Relay** collects raw usage data from APIs
-2. **Telemetry** stores and aggregates it
+1. **OpenClaw** logs every model response to session JSONL files
+2. **Ingestion service** tails the logs, computes costs, writes to SQLite
 3. **Agents** query their own cost data via CLI
 4. **Agents** analyze patterns (cache hit rates, model costs, session efficiency)
 5. **Agents** create optimization suggestions (stored in `optimization_suggestions` table)
@@ -218,9 +300,9 @@ CREATE TABLE tasks (
     title       TEXT NOT NULL,
     description TEXT,
     project     TEXT,
-    priority    INTEGER DEFAULT 3,    -- 1 (highest) to 4 (lowest)
-    status      TEXT DEFAULT 'todo',  -- 'todo', 'in_progress', 'blocked', 'done'
-    assignee    TEXT,                 -- 'max', 'cassandra', 'dex', etc.
+    priority    INTEGER DEFAULT 3,
+    status      TEXT DEFAULT 'todo',
+    assignee    TEXT,
     due_date    TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -246,14 +328,12 @@ CREATE TABLE task_comments (
 
 The entire architecture is designed around one principle: **minimize the tokens agents spend on operational overhead.**
 
-Here's a concrete comparison:
-
 | Operation | Google Sheets Approach | Ground Control CLI |
 |---|---|---|
-| Read today's cost | ~2,000-4,000 tokens (API call, parse HTML/JSON response, navigate sheet structure) | ~50-150 tokens (`telemetry cost --today` → small JSON response) |
-| Create a task | ~1,500-3,000 tokens (format API request, handle auth, parse response) | ~80-200 tokens (`dispatch task create --title "..." --priority 2`) |
-| Check budget status | ~2,000-3,500 tokens (query sheet, aggregate, calculate) | ~40-100 tokens (`telemetry budget --check` → single JSON object) |
-| List active tasks | ~2,500-4,000 tokens (query sheet, filter, format) | ~100-400 tokens (`dispatch task list --status in_progress` → JSON array) |
+| Read today's cost | ~2,000-4,000 tokens | ~50-150 tokens |
+| Create a task | ~1,500-3,000 tokens | ~80-200 tokens |
+| Check budget status | ~2,000-3,500 tokens | ~40-100 tokens |
+| List active tasks | ~2,500-4,000 tokens | ~100-400 tokens |
 
 Over hundreds of agent interactions per day, this adds up to real dollar savings. The architecture pays for itself.
 
@@ -262,11 +342,11 @@ Over hundreds of agent interactions per day, this adds up to real dollar savings
 ## Data Flow Summary
 
 ```
-1. COLLECT    Relay polls Anthropic/OpenAI APIs on a schedule
+1. LOG        OpenClaw logs every model response to session JSONL
                          │
-2. TRANSPORT  Relay POSTs normalized JSON to your host
+2. INGEST     Ingestion service tails JSONL, computes costs
                          │
-3. STORE      Telemetry collector writes to SQLite
+3. STORE      Per-request events written to local SQLite
                          │
 4. SURFACE    TUI (humans) and CLI (agents) read from SQLite
                          │
@@ -281,19 +361,44 @@ Over hundreds of agent interactions per day, this adds up to real dollar savings
 
 ---
 
+## Consumer Access Patterns
+
+| Consumer | Data Source | Access Method | Latency |
+|---|---|---|---|
+| **Telemetry TUI** | Local SQLite | File read | <1ms |
+| **Agents (self-throttle)** | Local SQLite | CLI → file read | <1ms |
+| **Ingestion service** | JSONL → SQLite | Cron or file watcher | 1-5 min |
+| **Dashboard (future)** | SQLite via API | HTTP from VPS | ~50ms |
+| **Ad-hoc queries** | SQLite directly | `sqlite3` CLI | Instant |
+
+---
+
 ## Deployment Model
 
-The typical Ground Control deployment looks like this:
+The typical Ground Control deployment runs entirely on a single host:
 
 ```
-┌─────────────────────┐          ┌──────────────────────┐
-│  Cloudflare Edge    │          │  Your VPS / Host     │
-│                     │          │                      │
-│  openclaw-relay     │──HTTPS──▶│  openclaw-telemetry  │
-│  (Worker + Cron)    │          │  openclaw-dispatch   │
-│                     │          │  OpenClaw agents     │
-│  Free tier works    │          │  SQLite databases    │
-└─────────────────────┘          └──────────────────────┘
+┌──────────────────────────────────────────┐
+│           Your VPS / Host                │
+│                                          │
+│  OpenClaw Gateway (agents + providers)   │
+│        │                                 │
+│        ▼                                 │
+│  Session JSONL files                     │
+│        │                                 │
+│        ▼                                 │
+│  Ingestion Service (cron)                │
+│        │                                 │
+│        ▼                                 │
+│  SQLite database                         │
+│        │                                 │
+│   ┌────┴────┐                            │
+│   ▼         ▼                            │
+│  Telemetry  Dispatch                     │
+│  (TUI/CLI)  (TUI/CLI)                   │
+│                                          │
+│  Zero external dependencies.             │
+└──────────────────────────────────────────┘
 ```
 
 **Minimum requirements for the host:**
@@ -301,19 +406,25 @@ The typical Ground Control deployment looks like this:
 - ~50MB disk for binaries
 - ~10MB RAM per tool (Go is efficient)
 - SQLite 3 (usually pre-installed)
-- Inbound HTTPS for Relay data (or run Relay locally)
+- Access to OpenClaw session directories
 
 This runs comfortably on a $5/month KVM VPS. It was designed to.
 
 ---
 
+
+
 ## Future Architecture Considerations
+
+**Web dashboard:** A SvelteKit app reading from a lightweight VPS API, or Litestream replicating SQLite to R2 for edge reads.
+
+**Reconciliation layer:** Provider billing APIs remain available for periodic comparison. A weekly script could compare `SUM(estimated_cost_usd)` against actual provider costs, flag drift > 10%, and adjust the pricing table. This is insurance, not infrastructure.
 
 **Cross-tool integration:** Telemetry and Dispatch currently operate independently with separate SQLite databases. A future integration point would allow telemetry data to inform dispatch decisions — for example, automatically creating a high-priority task when a budget alert fires, or pausing low-priority agent tasks when spend exceeds a threshold.
 
 **Plugin system:** The current architecture is intentionally simple. As the ecosystem grows, a lightweight plugin interface could allow community-built extensions (new providers, custom alert handlers, alternative storage backends) without bloating the core tools.
 
-**Multi-host support:** The current model assumes a single host. For users running agents across multiple machines, a future version of Relay could aggregate data from multiple hosts into a central Telemetry instance.
+**Multi-host support:** The current model assumes a single host. For users running agents across multiple machines, a future version could aggregate data from multiple hosts into a central Telemetry instance.
 
 ---
 

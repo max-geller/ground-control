@@ -20,8 +20,6 @@ You know the YouTube tutorials where they say _"I went ahead and bought a Mac Mi
 
 Ground Control is mission control for the rest of us.
 
-**If You're an Agent**: look in 
-
 ---
 
 ## The Philosophy
@@ -33,9 +31,10 @@ AI agents don't need a pretty dashboard. They need fast, structured, low-token i
 Ground Control is built around a few core beliefs:
 
 - **Every token matters.** If your tooling is burning tokens on bloated interfaces, you're paying a tax on every agent action. We minimize that tax.
-- **Lightweight by design.** SQLite backends, Go binaries, Cloudflare Workers. No Docker compose files with twelve services. No Electron apps. No npm install that downloads half the internet.
+- **Lightweight by design.** SQLite backends, Go binaries, no external API dependencies for cost data. No Docker compose files with twelve services. No Electron apps. No npm install that downloads half the internet.
 - **Terminal-native.** The TUI isn't a compromise — it's the design philosophy. Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss), these tools look good and run anywhere a terminal runs.
 - **Agents and humans share the same workspace.** Agents use the CLI. Humans use the TUI. Both read and write to the same data. No translation layer, no API middleware, no nonsense.
+- **Zero network dependency for cost data.** OpenClaw already logs every model response with full token counts. We ingest locally — no relay workers, no edge functions, no external API polling.
 
 ---
 
@@ -43,28 +42,29 @@ Ground Control is built around a few core beliefs:
 
 Ground Control is an umbrella project. The actual tools live in their own repos:
 
-### 🛰️ [openclaw-relay](https://github.com/max-geller/openclaw-relay)
-
-**Data Collection**
-A lightweight Cloudflare Worker that pulls cost and usage data from the Anthropic and OpenAI APIs. Relay collects the raw cost/usage telemetry and makes it available to the rest of the stack. It runs on the edge, costs nearly nothing, and does one job well.
-
 ### 📡 [openclaw-telemetry](https://github.com/max-geller/openclaw-telemetry)
 
 **Cost Optimization**
-Cost monitoring, spend tracking, and budget management in a beautiful TUI. Track daily/weekly/monthly spend across providers, break down costs by model, set budget alerts, and watch your burn rate in real time. Your agents monitor and analyze their costs and evaluate their costs against OpenClaw events: new sessions, compacts, gateway resets, cache writes, etc. That's everything you need for a full agentic feedback loop to get your OpenClaw setup optimized for token-use. Your agents look at costs and events, find patterns, suggest improvements, and you approve/deny; all right in the TUI.
+Cost monitoring, spend tracking, and budget management in a beautiful TUI. Track daily/weekly/monthly spend across providers, break down costs by model, set budget alerts, and watch your burn rate in real time.
+
+Telemetry ingests usage data directly from OpenClaw's session JSONL files — every model response from every provider (Anthropic, OpenAI, Google) is logged locally with full token counts. A lightweight ingestion service tails these files, computes estimated costs from a static pricing table, and writes per-request events to a local SQLite database. No external API polling. No relay infrastructure. Sub-millisecond reads.
+
+Your agents monitor and analyze their own costs and evaluate them against OpenClaw events: new sessions, compacts, gateway resets, cache writes, etc. That's everything you need for a full agentic feedback loop to get your OpenClaw setup optimized for token-use. Your agents look at costs and events, find patterns, suggest improvements, and you approve/deny; all right in the TUI.
 
 _Features:_
 
-- Real-time cost tracking and analytics across Anthropic and OpenAI (more integrations planned)
+- Real-time cost tracking and analytics across Anthropic, OpenAI, and Google
+- Per-request granularity — every model call attributed to the exact agent, session, and model
 - Budget alerts with configurable thresholds
 - Per-model and per-agent cost breakdowns and cache write ratio monitoring
-- Daily, weekly, and monthly spend views
-- Approval workflow for agents to suggest improvements, and you to approve them.
+- Daily, weekly, and monthly spend views with hourly burn rate
+- Static pricing table (~90% accuracy, sufficient for optimization decisions)
+- Approval workflow for agents to suggest improvements, and you to approve them
 
 ### 📋 [openclaw-dispatch](https://github.com/max-geller/openclaw-dispatch)
 
 **Task Management.**
-Agent task management with Kanban and table views. Assign work to agents (or yourself), track status, set priorities, and manage due dates — all from the terminal. Your agents interact via CLI commands; you get the TUI overview. Previously known as "TeamTask."
+Agent task management with Kanban and table views. Assign work to agents (or yourself), track status, set priorities, and manage due dates — all from the terminal. Your agents interact via CLI commands; you get the TUI overview.
 
 _Features:_
 
@@ -74,7 +74,6 @@ _Features:_
 - CLI interface for agent task creation and updates
 - SQLite backend — no external dependencies
 
-
 ---
 
 ## Architecture
@@ -83,21 +82,44 @@ _Features:_
 ┌─────────────────────────────────────────────────────────┐
 │                    GROUND CONTROL                       │
 │                                                         │
-│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │  RELAY   │──▶│  TELEMETRY   │    │   DISPATCH    │   │
-│  │ (Worker) │    │   (TUI/CLI)  │    │   (TUI/CLI)  │   │
-│  └──────────┘    └──────┬───────┘    └──────┬───────┘   │
-│       │                 │                   │           │
-│       │                 ▼                   ▼           │
-│       │           ┌──────────┐         ┌──────────┐     │
-│       │           │  SQLite  │         │  SQLite  │     │
-│  Cloudflare       └──────────┘         └──────────┘     │
-│    Edge                                                 │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              OPENCLAW GATEWAY                    │   │
+│  │                                                  │   │
+│  │  Agents: Dex, Cassandra, Max, Borkus             │   │
+│  │  Providers: Anthropic, OpenAI, Google             │   │
+│  │                                                  │   │
+│  │  Every model response → session JSONL w/ usage   │   │
+│  │  ~/.openclaw/agents/*/sessions/*.jsonl           │   │
+│  └────────────────────┬─────────────────────────────┘   │
+│                       │                                 │
+│                  JSONL files                             │
+│                  (append-only)                           │
+│                       │                                 │
+│  ┌────────────────────▼─────────────────────────────┐   │
+│  │           INGESTION SERVICE                      │   │
+│  │          (cron or file-watcher)                   │   │
+│  │                                                  │   │
+│  │  Tail JSONL → Extract usage → Apply pricing →    │   │
+│  │  Write per-request events to SQLite              │   │
+│  └────────────────────┬─────────────────────────────┘   │
+│                       │                                 │
+│                       ▼                                 │
+│  ┌──────────────┐    ┌──────────────┐                   │
+│  │  TELEMETRY   │    │   DISPATCH   │                   │
+│  │  (TUI/CLI)   │    │  (TUI/CLI)   │                   │
+│  └──────┬───────┘    └──────┬───────┘                   │
+│         │                   │                           │
+│         ▼                   ▼                           │
+│    ┌──────────┐        ┌──────────┐                     │
+│    │  SQLite  │        │  SQLite  │                     │
+│    └──────────┘        └──────────┘                     │
 │                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │              OPENCLAW AGENTS                     │   │
 │  │    Interact via CLI · Low-token · Structured     │   │
 │  └──────────────────────────────────────────────────┘   │
+│                                                         │
+│  All reads are local. Sub-millisecond. No network deps. │
 └─────────────────────────────────────────────────────────┘
 
   Agents use CLIs  ·  Humans use TUIs  ·  Data lives in SQLite
@@ -107,13 +129,14 @@ _Features:_
 
 ## Tech Stack
 
-| Layer         | Technology                                                                                                        | Why                                                                          |
-| ------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| TUI Framework | [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss) | Beautiful terminal UIs in Go. Fast, composable, no runtime dependencies.     |
-| Language      | Go                                                                                                                | Single binary deploys, tiny memory footprint, runs on anything.              |
-| Database      | SQLite                                                                                                            | Zero configuration, file-based, agent-friendly. No database server required. |
-| API Relay     | Cloudflare Workers                                                                                                | Edge-deployed, near-zero cost, reliable.                                     |
-| Aesthetic     | Late 1960s NASA Mission Control                                                                                   | Because constraints should become identity, not apologies.                   |
+| Layer | Technology | Why |
+|---|---|---|
+| TUI Framework | [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss) | Beautiful terminal UIs in Go. Fast, composable, no runtime dependencies. |
+| Language | Go | Single binary deploys, tiny memory footprint, runs on anything. |
+| Database | SQLite | Zero configuration, file-based, agent-friendly. No database server required. |
+| Data Source | OpenClaw session JSONL | Usage data originates locally — no external API polling required. |
+| Cost Estimation | Static pricing table | ~90% accurate, sufficient for optimization decisions. Optional reconciliation against provider APIs if needed. |
+| Aesthetic | Late 1960s NASA Mission Control | Because constraints should become identity, not apologies. |
 
 ---
 
@@ -137,8 +160,6 @@ _Features:_
 
 ---
 
-
-
 <p align="center">
   <img src="assets/telemetry-dashboard.png" alt="Telemetry Dashboard" width="700"/>
   <br/>
@@ -159,7 +180,7 @@ go install github.com/max-geller/openclaw-telemetry@latest
 go install github.com/max-geller/openclaw-dispatch@latest
 ```
 
-Relay requires a Cloudflare account and a few minutes of setup. See the [openclaw-relay README](https://github.com/max-geller/openclaw-relay) for details.
+Telemetry's ingestion service needs access to your OpenClaw session directories (`~/.openclaw/agents/*/sessions/`). See the [openclaw-telemetry README](https://github.com/max-geller/openclaw-telemetry) for setup details and pricing table configuration.
 
 ---
 
@@ -167,7 +188,7 @@ Relay requires a Cloudflare account and a few minutes of setup. See the [opencla
 
 **Pull up a chair. We saved you a seat.**
 
-Ground Control is a passion project born out of a simple frustration: OpenClaw can quickly become a runaway train of costs if you're not careful. What's worse the OpenClaw ecosystem doesn't have enough lightweight, cost-conscious tooling for people running agents in resource-limited environments. We're looking to close the full **cost feedback loop**, with some guardrails.
+Ground Control is a passion project born out of a simple frustration: OpenClaw can quickly become a runaway train of costs if you're not careful. What's worse, the OpenClaw ecosystem doesn't have enough lightweight, cost-conscious tooling for people running agents in resource-limited environments. We're looking to close the full **cost feedback loop**, with some guardrails.
 
 ### We'd love your help with:
 
@@ -176,6 +197,7 @@ Ground Control is a passion project born out of a simple frustration: OpenClaw c
 - **New tool ideas** — Have an idea for a tool that fits the Ground Control philosophy? Open a discussion. If it's lightweight, terminal-native, and agent-friendly, it probably belongs here.
 - **Documentation** — Good docs make good tools. If you can explain something more clearly than we did, please do.
 - **Testing on different environments** — Running on a Raspberry Pi? A different VPS provider? ARM? Let us know how it goes.
+- **Pricing table updates** — Providers change model pricing 2-3 times per year. If you spot a pricing change before we do, PRs to update the seed data are always welcome.
 
 ### The ground rules:
 
@@ -191,18 +213,16 @@ Ground Control is a passion project born out of a simple frustration: OpenClaw c
 3. Make your changes
 4. Submit a PR with a clear description of what and why
 
-
 ---
-
-
 
 ## Roadmap
 
-- [x] openclaw-relay — Cloudflare Worker for API data collection
-- [x] openclaw-telemetry — Cost monitoring TUI
+- [x] openclaw-telemetry — Cost monitoring TUI with local JSONL ingestion
 - [x] openclaw-dispatch — Task management TUI
-- [ ] Agent configuration management 
+- [ ] Agent configuration management
 - [ ] Cross-tool integration (telemetry-informed dispatch decisions)
+- [ ] Optional reconciliation layer (compare estimates against provider billing APIs)
+- [ ] Web dashboard (SvelteKit, reading from VPS API or Litestream-replicated SQLite)
 - [ ] Community plugin system
 - [ ] Public documentation site
 
@@ -219,5 +239,3 @@ MIT. Use it, fork it, make it better.
 If Ground Control helps you keep your agents under budget, consider giving us a ⭐. It helps other cost-conscious OpenClaw enthusiasts find these tools.
 
 ---
-
-
