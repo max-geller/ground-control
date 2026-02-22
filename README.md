@@ -4,8 +4,6 @@
 
 ### Mission operations for your OpenClaw agents.
 
-> _"Houston, we're under budget."_
-
 <p align="center">
   <img src="assets/banner.jpg" alt="Ground Control — Mission Operations for OpenClaw Agents" width="800"/>
 </p>
