@@ -218,7 +218,7 @@ Ground Control is a passion project born out of a simple frustration: OpenClaw c
 ## Roadmap
 
 - [x] openclaw-telemetry — Cost monitoring TUI with local JSONL ingestion
-- [x] openclaw-dispatch — Task management TUI
+- [x] openclaw-relay — Task management TUI
 - [ ] Agent configuration management
 - [ ] Cross-tool integration (telemetry-informed dispatch decisions)
 - [ ] Optional reconciliation layer (compare estimates against provider billing APIs)

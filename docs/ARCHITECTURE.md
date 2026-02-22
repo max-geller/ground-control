@@ -19,19 +19,18 @@ All cost and usage data originates locally. OpenClaw logs every model response �
   │  ┌────────────────────────────────────────────────────┐  │
   │  │                OPENCLAW GATEWAY                    │  │
   │  │                                                    │  │
-  │  │  Agents: Dex, Cassandra, Max, Borkus               │  │
-  │  │  Providers: Anthropic, OpenAI, Google               │  │
+  │  │  Providers: Anthropic, OpenAI, Google, etc         │  │
   │  │                                                    │  │
   │  │  Every model response → session JSONL with usage   │  │
   │  │  ~/.openclaw/agents/*/sessions/*.jsonl             │  │
   │  └──────────────────────┬─────────────────────────────┘  │
   │                         │                                │
-  │                    JSONL files                            │
-  │                    (append-only)                          │
+  │                    JSONL files                           │
+  │                    (append-only)                         │
   │                         │                                │
   │  ┌──────────────────────▼─────────────────────────────┐  │
   │  │             INGESTION SERVICE                      │  │
-  │  │           (cron or file-watcher)                    │  │
+  │  │           (cron or file-watcher)                   │  │
   │  │                                                    │  │
   │  │  1. Tail new JSONL entries since last offset       │  │
   │  │  2. Extract usage events (input, output, cache)    │  │
@@ -49,14 +48,14 @@ All cost and usage data originates locally. OpenClaw logs every model response �
   │  │  usage_events | model_pricing | agents | alerts    │  │
   │  └────────┬───────────────────┬───────────────────────┘  │
   │           │                   │                          │
-  │  ┌────────▼────────┐  ┌──────▼──────────┐               │
-  │  │   TELEMETRY     │  │    DISPATCH     │               │
-  │  │   (TUI/CLI)     │  │    (TUI/CLI)    │               │
-  │  │                 │  │                 │               │
-  │  │  Cost views,    │  │  Task mgmt,    │               │
-  │  │  budget alerts, │  │  Kanban,       │               │
-  │  │  optimization   │  │  assignments   │               │
-  │  └────────┬────────┘  └──────┬──────────┘               │
+  │  ┌────────▼────────┐  ┌──────▼───────────┐               │
+  │  │   TELEMETRY     │  │    RELAY         │               │
+  │  │   (TUI/CLI)     │  │    (TUI/CLI)     │               │
+  │  │                 │  │                  │               │
+  │  │  Cost views,    │  │  Task mgmt,      │               │
+  │  │  budget alerts, │  │  Kanban,         │               │
+  │  │  optimization   │  │  assignments     │               │
+  │  └────────┬────────┘  └──────┬───────────┘               │
   │           │                  │                           │
   │           ▼                  ▼                           │
   │  ┌────────────────────────────────────────────────────┐  │
@@ -71,9 +70,7 @@ All cost and usage data originates locally. OpenClaw logs every model response �
   │  All reads are local. Sub-millisecond. No network deps.  │
   └──────────────────────────────────────────────────────────┘
 
-  Optional (future):
-    VPS exposes a lightweight API → SvelteKit dashboard
-    Or: Litestream replicates SQLite to R2 for edge reads
+
 ```
 
 ---
@@ -85,13 +82,15 @@ All cost and usage data originates locally. OpenClaw logs every model response �
 **What it is:** The raw usage data that OpenClaw already produces.
 
 **Where it lives:**
+
 ```
 ~/.openclaw/agents/{agent_name}/sessions/*.jsonl
 ```
 
-Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent attribution is automatic — the directory name _is_ the agent.
+Each agent has its own session directory. Agent attribution is automatic — the directory name _is_ the agent.
 
 **What a usage event looks like:**
+
 ```json
 {
   "type": "message",
@@ -111,17 +110,17 @@ Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent at
 }
 ```
 
-**Provider field values:** `anthropic`, `openai`, `openai-codex`, `google`
+**Provider field values:** `anthropic`, `openai`, `openai-codex`, `google`, etc.
 
 **Token fields by provider:**
 
-| Field | Anthropic | OpenAI | Google |
-|---|---|---|---|
-| `input` | ✓ (uncached) | ✓ (total, includes cached) | ✓ |
-| `output` | ✓ | ✓ | ✓ |
-| `cacheRead` | ✓ | ✓ | ✓ |
-| `cacheWrite` | ✓ | — (free) | — (free) |
-| `cost.total` | ✓ (OpenClaw estimate) | ✓ | ✓ |
+| Field        | Anthropic             | OpenAI                     | Google   |
+| ------------ | --------------------- | -------------------------- | -------- |
+| `input`      | ✓ (uncached)          | ✓ (total, includes cached) | ✓        |
+| `output`     | ✓                     | ✓                          | ✓        |
+| `cacheRead`  | ✓                     | ✓                          | ✓        |
+| `cacheWrite` | ✓                     | — (free)                   | — (free) |
+| `cost.total` | ✓ (OpenClaw estimate) | ✓                          | ✓        |
 
 **Why this replaces the relay:** The data already exists locally. OpenClaw logs every model response with full token counts from all three providers. There's no need to poll external admin APIs when the same information originates on the VPS. This eliminates the Cloudflare Worker, D1 database, sync mechanism, admin API keys, and ~864 external API calls per day.
 
@@ -134,6 +133,7 @@ Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent at
 **What it does:** Tails OpenClaw's session JSONL files, extracts usage events from assistant messages, computes estimated costs using the static pricing table, and writes per-request events to SQLite.
 
 **How it works:**
+
 1. Read `ingestion_state` table to get last-processed file offset per session file
 2. Scan `~/.openclaw/agents/*/sessions/*.jsonl` for new data past stored offsets
 3. For each new JSONL line with `type: "message"`, `role: "assistant"`, and usage data:
@@ -146,6 +146,7 @@ Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent at
 5. Check budget alerts and fire if thresholds are exceeded
 
 **Key design decisions:**
+
 - Idempotent re-runs via offset tracking. The script picks up where it left off.
 - Per-request granularity (not pre-aggregated buckets). You get exact attribution: which session, which model call, which agent.
 - Aggregation happens at query time, not at ingestion time.
@@ -159,11 +160,11 @@ Each agent (Dex, Cassandra, Max, Borkus) has its own session directory. Agent at
 
 Published model pricing changes 2-3 times per year, announced in advance. Between changes, the pricing table is exact for standard usage. The only sources of drift are:
 
-| Drift Source | Impact | Notes |
-|---|---|---|
+| Drift Source                                       | Impact                    | Notes                                   |
+| -------------------------------------------------- | ------------------------- | --------------------------------------- |
 | Context window tiers (Anthropic 0-200k vs 200k-1M) | ~10-20% on affected calls | Only Anthropic, only for large contexts |
-| Batch discounts | ~50% lower | Agents don't typically batch |
-| Cache read discount variance (OpenAI 50-90%) | ±20% on cached reads | Use midpoint estimate |
+| Batch discounts                                    | ~50% lower                | Agents don't typically batch            |
+| Cache read discount variance (OpenAI 50-90%)       | ±20% on cached reads      | Use midpoint estimate                   |
 
 For the intended use case — agents asking "should I use Opus or Sonnet for this?" or "am I burning too much on cache writes?" — a ±5-10% cost estimate is more than adequate. The decisions don't change at that margin.
 
@@ -178,6 +179,7 @@ For the intended use case — agents asking "should I use Opus or Sonnet for thi
 **What it does:** Reads from the local SQLite database populated by the ingestion service. Provides cost monitoring, budget tracking, alerting, and optimization analysis.
 
 **Dual interface pattern:**
+
 ```
 Human (TUI):                          Agent (CLI):
 
@@ -194,6 +196,7 @@ Human (TUI):                          Agent (CLI):
 The TUI renders rich, interactive views with charts, tables, and navigation. The CLI returns structured JSON that an agent can parse in minimal tokens.
 
 **SQLite schema (simplified):**
+
 ```sql
 CREATE TABLE usage_events (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,6 +282,7 @@ This loop means your agents are actively participating in their own cost optimiz
 **What it does:** Dispatch is a shared task board where humans assign work, agents pick up tasks, update status, and report results. Humans see the Kanban/table TUI. Agents interact via CLI.
 
 **Dual interface pattern:**
+
 ```
 Human (TUI):                          Agent (CLI):
 
@@ -294,6 +298,7 @@ Human (TUI):                          Agent (CLI):
 ```
 
 **SQLite schema (simplified):**
+
 ```sql
 CREATE TABLE tasks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,6 +323,7 @@ CREATE TABLE task_comments (
 ```
 
 **Key design decisions:**
+
 - Tasks have assignees that can be either humans or agent names. The system doesn't distinguish — a task assigned to "dex" is the same data structure as one assigned to "max."
 - Agents create and update tasks via CLI with structured flags. No natural language parsing, no prompt overhead.
 - The TUI provides filtering by assignee, project, priority, and status. The CLI supports the same filters as flags.
@@ -328,12 +334,12 @@ CREATE TABLE task_comments (
 
 The entire architecture is designed around one principle: **minimize the tokens agents spend on operational overhead.**
 
-| Operation | Google Sheets Approach | Ground Control CLI |
-|---|---|---|
-| Read today's cost | ~2,000-4,000 tokens | ~50-150 tokens |
-| Create a task | ~1,500-3,000 tokens | ~80-200 tokens |
-| Check budget status | ~2,000-3,500 tokens | ~40-100 tokens |
-| List active tasks | ~2,500-4,000 tokens | ~100-400 tokens |
+| Operation           | Google Sheets Approach | Ground Control CLI |
+| ------------------- | ---------------------- | ------------------ |
+| Read today's cost   | ~2,000-4,000 tokens    | ~50-150 tokens     |
+| Create a task       | ~1,500-3,000 tokens    | ~80-200 tokens     |
+| Check budget status | ~2,000-3,500 tokens    | ~40-100 tokens     |
+| List active tasks   | ~2,500-4,000 tokens    | ~100-400 tokens    |
 
 Over hundreds of agent interactions per day, this adds up to real dollar savings. The architecture pays for itself.
 
@@ -363,13 +369,13 @@ Over hundreds of agent interactions per day, this adds up to real dollar savings
 
 ## Consumer Access Patterns
 
-| Consumer | Data Source | Access Method | Latency |
-|---|---|---|---|
-| **Telemetry TUI** | Local SQLite | File read | <1ms |
-| **Agents (self-throttle)** | Local SQLite | CLI → file read | <1ms |
-| **Ingestion service** | JSONL → SQLite | Cron or file watcher | 1-5 min |
-| **Dashboard (future)** | SQLite via API | HTTP from VPS | ~50ms |
-| **Ad-hoc queries** | SQLite directly | `sqlite3` CLI | Instant |
+| Consumer                   | Data Source     | Access Method        | Latency |
+| -------------------------- | --------------- | -------------------- | ------- |
+| **Telemetry TUI**          | Local SQLite    | File read            | <1ms    |
+| **Agents (self-throttle)** | Local SQLite    | CLI → file read      | <1ms    |
+| **Ingestion service**      | JSONL → SQLite  | Cron or file watcher | 1-5 min |
+| **Dashboard (future)**     | SQLite via API  | HTTP from VPS        | ~50ms   |
+| **Ad-hoc queries**         | SQLite directly | `sqlite3` CLI        | Instant |
 
 ---
 
@@ -402,6 +408,7 @@ The typical Ground Control deployment runs entirely on a single host:
 ```
 
 **Minimum requirements for the host:**
+
 - Linux (any distro), macOS, or Windows
 - ~50MB disk for binaries
 - ~10MB RAM per tool (Go is efficient)
@@ -411,8 +418,6 @@ The typical Ground Control deployment runs entirely on a single host:
 This runs comfortably on a $5/month KVM VPS. It was designed to.
 
 ---
-
-
 
 ## Future Architecture Considerations
 
@@ -428,4 +433,4 @@ This runs comfortably on a $5/month KVM VPS. It was designed to.
 
 ---
 
-*This document is a living reference. As the architecture evolves, so will this doc. If something is unclear or outdated, please [open an issue](https://github.com/max-geller/ground-control/issues).*
+_This document is a living reference. As the architecture evolves, so will this doc. If something is unclear or outdated, please [open an issue](https://github.com/max-geller/ground-control/issues)._
